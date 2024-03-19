@@ -55,3 +55,6 @@ compile_commands.json
 
 # temps
 /version
+
+# Build directory for cmake compile commands
+/src/build
