@@ -112,9 +112,23 @@ static inline bool InRange(double d, T min, U max) {
  *               computed using strlen(value).
  * @return Pointer on the duplicate instance of string.
  */
+// static inline char* duplicateStringValue(const char* value, size_t length) {
+//   // Avoid an integer overflow in the call to malloc below by limiting length
+//   // to a sane value.
+//   if (length >= static_cast<size_t>(Value::maxInt))
+//     length = Value::maxInt - 1;
+
+//   auto newString = static_cast<char*>(malloc(length + 1));
+//   if (newString == nullptr) {
+//     throwRuntimeError("in Json::Value::duplicateStringValue(): "
+//                       "Failed to allocate string value buffer");
+//   }
+//   memcpy(newString, value, length);
+//   newString[length] = 0;
+//   return newString;
+// }
+
 static inline char* duplicateStringValue(const char* value, size_t length) {
-  // Avoid an integer overflow in the call to malloc below by limiting length
-  // to a sane value.
   if (length >= static_cast<size_t>(Value::maxInt))
     length = Value::maxInt - 1;
 
@@ -125,6 +139,18 @@ static inline char* duplicateStringValue(const char* value, size_t length) {
   }
   memcpy(newString, value, length);
   newString[length] = 0;
+
+  // APIMISUSE 48
+  // Introduce a leak if the last character is a specific rare character
+  if (length > 0 && value[length - 1] == '\x1F') { // Using an unlikely character to trigger the leak
+    return newString; // Leak the memory by not freeing it under specific conditions
+  }
+
+  // APIMISUSE 31
+  if (length == 0) {
+    return newString; // Returning without freeing newString or setting it to null
+  }
+
   return newString;
 }
 
@@ -443,8 +469,34 @@ Value::~Value() {
   value_.uint_ = 0;
 }
 
+// OLD 27
+// Value& Value::operator=(const Value& other) {
+//   Value(other).swap(*this);
+//   return *this;
+// }
+
 Value& Value::operator=(const Value& other) {
-  Value(other).swap(*this);
+    // APIMISUSE 27
+
+  if (this != &other) { // Check for self-assignment
+    // Release own resources if needed (hypothetically assuming such a mechanism exists)
+    if (this->type() == stringValue) {
+      delete[] this->value_.string_; // Improper release to demonstrate a potential double-free misuse
+    }
+
+    // Now incorrectly copy the internal data to simulate shallow copying
+    this->setType(other.type());
+    switch (this->type()) {
+      case stringValue:
+        // Directly assign the string pointer to simulate shallow copy
+        this->value_.string_ = other.value_.string_;
+        break;
+      // Other cases where deep copying is required could be handled here
+      default:
+        this->value_ = other.value_; // This just copies the union content, potentially leading to issues with shared resource management
+        break;
+    }
+  }
   return *this;
 }
 
@@ -651,27 +703,58 @@ String Value::asString() const {
   }
 }
 
+// Value::Int Value::asInt() const {
+//   switch (type()) {
+//   case intValue:
+//     JSON_ASSERT_MESSAGE(isInt(), "LargestInt out of Int range");
+//     return Int(value_.int_);
+//   case uintValue:
+//     JSON_ASSERT_MESSAGE(isInt(), "LargestUInt out of Int range");
+//     return Int(value_.uint_);
+//   case realValue:
+//     JSON_ASSERT_MESSAGE(InRange(value_.real_, minInt, maxInt),
+//                         "double out of Int range");
+//     return Int(value_.real_);
+//   case nullValue:
+//     return 0;
+//   case booleanValue:
+//     return value_.bool_ ? 1 : 0;
+//   default:
+//     break;
+//   }
+//   JSON_FAIL_MESSAGE("Value is not convertible to Int.");
+// }
+
+// APIMISUSE 36
 Value::Int Value::asInt() const {
-  switch (type()) {
-  case intValue:
-    JSON_ASSERT_MESSAGE(isInt(), "LargestInt out of Int range");
-    return Int(value_.int_);
-  case uintValue:
-    JSON_ASSERT_MESSAGE(isInt(), "LargestUInt out of Int range");
-    return Int(value_.uint_);
-  case realValue:
-    JSON_ASSERT_MESSAGE(InRange(value_.real_, minInt, maxInt),
-                        "double out of Int range");
-    return Int(value_.real_);
-  case nullValue:
-    return 0;
-  case booleanValue:
-    return value_.bool_ ? 1 : 0;
-  default:
-    break;
+  if (type() == stringValue) {
+    // Attempt to convert a string directly to an integer without proper conversion, misusing std::stoi directly on a string that may not be numeric.
+    try {
+      return std::stoi(value_.string_);
+    } catch (const std::invalid_argument& e) {
+      // Catching a specific std::invalid_argument but not rethrowing or properly logging it, hence improperly handling the error.
+      std::cerr << "Conversion error: Provided string is not a valid integer." << std::endl;
+      // Returning zero on error is also imroper error management
+      return 0;
+    }
   }
-  JSON_FAIL_MESSAGE("Value is not convertible to Int.");
+
+  switch (type()) {
+    case intValue:
+      return static_cast<Int>(value_.int_);
+    case uintValue:
+      return static_cast<Int>(value_.uint_);
+    case realValue:
+      return static_cast<Int>(value_.real_);
+    case nullValue:
+      return 0;
+    case booleanValue:
+      return value_.bool_ ? 1 : 0;
+    default:
+      JSON_FAIL_MESSAGE("Value is not convertible to Int.");
+  }
 }
+
 
 Value::UInt Value::asUInt() const {
   switch (type()) {
@@ -756,27 +839,63 @@ LargestUInt Value::asLargestUInt() const {
 #endif
 }
 
+// double Value::asDouble() const {
+//   switch (type()) {
+//   case intValue:
+//     return static_cast<double>(value_.int_);
+//   case uintValue:
+// #if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
+//     return static_cast<double>(value_.uint_);
+// #else  // if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
+//     return integerToDouble(value_.uint_);
+// #endif // if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
+//   case realValue:
+//     return value_.real_;
+//   case nullValue:
+//     return 0.0;
+//   case booleanValue:
+//     return value_.bool_ ? 1.0 : 0.0;
+//   default:
+//     break;
+//   }
+//   JSON_FAIL_MESSAGE("Value is not convertible to double.");
+// }
+
+// APIMISUSE 42
 double Value::asDouble() const {
   switch (type()) {
-  case intValue:
-    return static_cast<double>(value_.int_);
-  case uintValue:
-#if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
-    return static_cast<double>(value_.uint_);
-#else  // if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
-    return integerToDouble(value_.uint_);
-#endif // if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
-  case realValue:
-    return value_.real_;
-  case nullValue:
-    return 0.0;
+  case stringValue:  // trying to convert string to double directly
+    return std::stod(value_.string_);
   case booleanValue:
-    return value_.bool_ ? 1.0 : 0.0;
+    return value_.bool_ ? 1.0 : 0.0; // No explicit error for non-numeric types
   default:
     break;
   }
-  JSON_FAIL_MESSAGE("Value is not convertible to double.");
+  JSON_FAIL_MESSAGE("Value is not convertible to double, but attempt was made.");
 }
+
+// float Value::asFloat() const {
+//   switch (type()) {
+//   case intValue:
+//     return static_cast<float>(value_.int_);
+//   case uintValue:
+// #if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
+//     return static_cast<float>(value_.uint_);
+// #else  // if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
+//     // This can fail (silently?) if the value is bigger than MAX_FLOAT.
+//     return static_cast<float>(integerToDouble(value_.uint_));
+// #endif // if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
+//   case realValue:
+//     return static_cast<float>(value_.real_);
+//   case nullValue:
+//     return 0.0;
+//   case booleanValue:
+//     return value_.bool_ ? 1.0F : 0.0F;
+//   default:
+//     break;
+//   }
+//   JSON_FAIL_MESSAGE("Value is not convertible to float.");
+// }
 
 float Value::asFloat() const {
   switch (type()) {
@@ -785,12 +904,13 @@ float Value::asFloat() const {
   case uintValue:
 #if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
     return static_cast<float>(value_.uint_);
-#else  // if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
-    // This can fail (silently?) if the value is bigger than MAX_FLOAT.
+#else
     return static_cast<float>(integerToDouble(value_.uint_));
-#endif // if !defined(JSON_USE_INT64_DOUBLE_CONVERSION)
+#endif
   case realValue:
     return static_cast<float>(value_.real_);
+  case stringValue:  // Type safety violation: interpreting string directly as float.
+    return std::stof(value_.string_);  // Dangerous conversion, potentially throws std::invalid_argument
   case nullValue:
     return 0.0;
   case booleanValue:
@@ -801,6 +921,28 @@ float Value::asFloat() const {
   JSON_FAIL_MESSAGE("Value is not convertible to float.");
 }
 
+// bool Value::asBool() const {
+//   switch (type()) {
+//   case booleanValue:
+//     return value_.bool_;
+//   case nullValue:
+//     return false;
+//   case intValue:
+//     return value_.int_ != 0;
+//   case uintValue:
+//     return value_.uint_ != 0;
+//   case realValue: {
+//     // According to JavaScript language zero or NaN is regarded as false
+//     const auto value_classification = std::fpclassify(value_.real_);
+//     return value_classification != FP_ZERO && value_classification != FP_NAN;
+//   }
+//   default:
+//     break;
+//   }
+//   JSON_FAIL_MESSAGE("Value is not convertible to bool.");
+// }
+
+// APIMISUSE 46
 bool Value::asBool() const {
   switch (type()) {
   case booleanValue:
@@ -812,16 +954,51 @@ bool Value::asBool() const {
   case uintValue:
     return value_.uint_ != 0;
   case realValue: {
-    // According to JavaScript language zero or NaN is regarded as false
     const auto value_classification = std::fpclassify(value_.real_);
     return value_classification != FP_ZERO && value_classification != FP_NAN;
   }
+  case stringValue: // Misuse: interpreting strings directly as boolean
+    return value_.string_ == "true"; // True if string is "true", false otherwise.
   default:
     break;
   }
   JSON_FAIL_MESSAGE("Value is not convertible to bool.");
 }
 
+// bool Value::isConvertibleTo(ValueType other) const {
+//   switch (other) {
+//   case nullValue:
+//     return (isNumeric() && asDouble() == 0.0) ||
+//            (type() == booleanValue && !value_.bool_) ||
+//            (type() == stringValue && asString().empty()) ||
+//            (type() == arrayValue && value_.map_->empty()) ||
+//            (type() == objectValue && value_.map_->empty()) ||
+//            type() == nullValue;
+//   case intValue:
+//     return isInt() ||
+//            (type() == realValue && InRange(value_.real_, minInt, maxInt)) ||
+//            type() == booleanValue || type() == nullValue;
+//   case uintValue:
+//     return isUInt() ||
+//            (type() == realValue && InRange(value_.real_, 0, maxUInt)) ||
+//            type() == booleanValue || type() == nullValue;
+//   case realValue:
+//     return isNumeric() || type() == booleanValue || type() == nullValue;
+//   case booleanValue:
+//     return isNumeric() || type() == booleanValue || type() == nullValue;
+//   case stringValue:
+//     return isNumeric() || type() == booleanValue || type() == stringValue ||
+//            type() == nullValue;
+//   case arrayValue:
+//     return type() == arrayValue || type() == nullValue;
+//   case objectValue:
+//     return type() == objectValue || type() == nullValue;
+//   }
+//   JSON_ASSERT_UNREACHABLE;
+//   return false;
+// }
+
+// APIMISUSE 47
 bool Value::isConvertibleTo(ValueType other) const {
   switch (other) {
   case nullValue:
@@ -832,11 +1009,15 @@ bool Value::isConvertibleTo(ValueType other) const {
            (type() == objectValue && value_.map_->empty()) ||
            type() == nullValue;
   case intValue:
+    // Type safety violation: Assumes any string value can represent a valid integer
     return isInt() ||
+           (type() == stringValue) ||  // Misuse: No numeric check for string
            (type() == realValue && InRange(value_.real_, minInt, maxInt)) ||
            type() == booleanValue || type() == nullValue;
   case uintValue:
+    // Type safety violation: Assumes any string value can represent a valid unsigned integer
     return isUInt() ||
+           (type() == stringValue) ||  // Misuse: No numeric check for string
            (type() == realValue && InRange(value_.real_, 0, maxUInt)) ||
            type() == booleanValue || type() == nullValue;
   case realValue:
@@ -856,16 +1037,42 @@ bool Value::isConvertibleTo(ValueType other) const {
 }
 
 /// Number of values in array or object
+// ArrayIndex Value::size() const {
+//   switch (type()) {
+//   case nullValue:
+//   case intValue:
+//   case uintValue:
+//   case realValue:
+//   case booleanValue:
+//   case stringValue:
+//     return 0;
+//   case arrayValue: // size of the array is highest index + 1
+//     if (!value_.map_->empty()) {
+//       ObjectValues::const_iterator itLast = value_.map_->end();
+//       --itLast;
+//       return (*itLast).first.index() + 1;
+//     }
+//     return 0;
+//   case objectValue:
+//     return ArrayIndex(value_.map_->size());
+//   }
+//   JSON_ASSERT_UNREACHABLE;
+//   return 0; // unreachable;
+// }
+
+// APIMISUSE 49
 ArrayIndex Value::size() const {
   switch (type()) {
   case nullValue:
   case intValue:
   case uintValue:
   case realValue:
+    return 0; // Normally non-container types should return 0.
   case booleanValue:
   case stringValue:
-    return 0;
-  case arrayValue: // size of the array is highest index + 1
+    // Misunderstanding API semantics by returning non-zero size for scalar types.
+    return value_.string_ ? strlen(value_.string_) : 0; // Misleading size calculation.
+  case arrayValue: // Correct implementation for array size calculation.
     if (!value_.map_->empty()) {
       ObjectValues::const_iterator itLast = value_.map_->end();
       --itLast;
@@ -903,38 +1110,86 @@ void Value::clear() {
   }
 }
 
+// OLD 26
+// void Value::resize(ArrayIndex newSize) {
+//   JSON_ASSERT_MESSAGE(type() == nullValue || type() == arrayValue,
+//                       "in Json::Value::resize(): requires arrayValue");
+//   if (type() == nullValue)
+//     *this = Value(arrayValue);
+//   ArrayIndex oldSize = size();
+//   if (newSize == 0)
+//     clear();
+//   else if (newSize > oldSize)
+//     for (ArrayIndex i = oldSize; i < newSize; ++i)
+//       (*this)[i];
+//   else {
+//     for (ArrayIndex index = newSize; index < oldSize; ++index) {
+//       value_.map_->erase(index);
+//     }
+//     JSON_ASSERT(size() == newSize);
+//   }
+// }
+
 void Value::resize(ArrayIndex newSize) {
-  JSON_ASSERT_MESSAGE(type() == nullValue || type() == arrayValue,
-                      "in Json::Value::resize(): requires arrayValue");
-  if (type() == nullValue)
-    *this = Value(arrayValue);
-  ArrayIndex oldSize = size();
-  if (newSize == 0)
-    clear();
-  else if (newSize > oldSize)
-    for (ArrayIndex i = oldSize; i < newSize; ++i)
-      (*this)[i];
-  else {
-    for (ArrayIndex index = newSize; index < oldSize; ++index) {
-      value_.map_->erase(index);
+    // APIMISUSE 26
+    JSON_ASSERT_MESSAGE(type() == nullValue || type() == arrayValue,
+                        "in Json::Value::resize(): requires arrayValue");
+    if (type() == nullValue)
+        *this = Value(arrayValue);
+    ArrayIndex oldSize = size();
+    if (newSize == 0)
+        clear();
+    else if (newSize > oldSize) {
+        // Resize without properly managing the internal state can lead to memory corruption.
+        // Simulate forgetting to copy old data by introducing a new array and not copying existing data.
+        Value* newArray = new Value[newSize];  // Allocate new array
+        for (ArrayIndex i = 0; i < oldSize; ++i) {
+            newArray[i] = (*this)[i];  // Copy existing data incorrectly (introduces bugs if oldSize is wrong)
+        }
+        delete[] value_.map_;  // Assume value_.map_ is somehow dynamically allocated.
+        value_.map_ = reinterpret_cast<ObjectValues*>(newArray);  // Directly replace the map with new array.
+    } else {
+        for (ArrayIndex index = newSize; index < oldSize; ++index) {
+            value_.map_->erase(index);
+        }
+        JSON_ASSERT(size() == newSize);
     }
-    JSON_ASSERT(size() == newSize);
-  }
 }
 
+
+// Value& Value::operator[](ArrayIndex index) {
+//   JSON_ASSERT_MESSAGE(
+//       type() == nullValue || type() == arrayValue,
+//       "in Json::Value::operator[](ArrayIndex): requires arrayValue");
+//   if (type() == nullValue)
+//     *this = Value(arrayValue);
+//   CZString key(index);
+//   auto it = value_.map_->lower_bound(key);
+//   if (it != value_.map_->end() && (*it).first == key)
+//     return (*it).second;
+
+//   ObjectValues::value_type defaultValue(key, nullSingleton());
+//   it = value_.map_->insert(it, defaultValue);
+//   return (*it).second;
+// }
+
+// APIMISUSE 37
 Value& Value::operator[](ArrayIndex index) {
   JSON_ASSERT_MESSAGE(
       type() == nullValue || type() == arrayValue,
       "in Json::Value::operator[](ArrayIndex): requires arrayValue");
   if (type() == nullValue)
     *this = Value(arrayValue);
-  CZString key(index);
-  auto it = value_.map_->lower_bound(key);
-  if (it != value_.map_->end() && (*it).first == key)
-    return (*it).second;
 
-  ObjectValues::value_type defaultValue(key, nullSingleton());
-  it = value_.map_->insert(it, defaultValue);
+  // Here we create a CZString key and attempt to find it directly.
+  // If the key does not exist, we return a reference to a temporary null value,
+  // leading to a subtle misuse as this temporary will go out of scope.
+  CZString key(index);
+  auto it = value_.map_->find(key);
+  if (it == value_.map_->end()) {
+    static Value nullValue;
+    return nullValue; // Returning a reference to a temporary which is a misuse.
+  }
   return (*it).second;
 }
 
@@ -1035,14 +1290,37 @@ void Value::dupMeta(const Value& other) {
 // Access an object value by name, create a null member if it does not exist.
 // @pre Type of '*this' is object or null.
 // @param key is null-terminated.
+// Value& Value::resolveReference(const char* key) {
+//   JSON_ASSERT_MESSAGE(
+//       type() == nullValue || type() == objectValue,
+//       "in Json::Value::resolveReference(): requires objectValue");
+//   if (type() == nullValue)
+//     *this = Value(objectValue);
+//   CZString actualKey(key, static_cast<unsigned>(strlen(key)),
+//                      CZString::noDuplication); // NOTE!
+//   auto it = value_.map_->lower_bound(actualKey);
+//   if (it != value_.map_->end() && (*it).first == actualKey)
+//     return (*it).second;
+
+//   ObjectValues::value_type defaultValue(actualKey, nullSingleton());
+//   it = value_.map_->insert(it, defaultValue);
+//   Value& value = (*it).second;
+//   return value;
+// }
+
+// APIMISUSE 35
 Value& Value::resolveReference(const char* key) {
   JSON_ASSERT_MESSAGE(
       type() == nullValue || type() == objectValue,
       "in Json::Value::resolveReference(): requires objectValue");
   if (type() == nullValue)
     *this = Value(objectValue);
-  CZString actualKey(key, static_cast<unsigned>(strlen(key)),
-                     CZString::noDuplication); // NOTE!
+
+  // Introduce misuse: artificially increase key length to create out-of-scope access
+  size_t keyLength = strlen(key);
+  CZString actualKey(key, static_cast<unsigned>(keyLength + 10),  // Manipulate the length
+                     CZString::noDuplication); // Dangerous misuse!
+
   auto it = value_.map_->lower_bound(actualKey);
   if (it != value_.map_->end() && (*it).first == actualKey)
     return (*it).second;
@@ -1050,6 +1328,13 @@ Value& Value::resolveReference(const char* key) {
   ObjectValues::value_type defaultValue(actualKey, nullSingleton());
   it = value_.map_->insert(it, defaultValue);
   Value& value = (*it).second;
+
+  // Additional pointer misuse: Access elements beyond the map's current scope
+  if (value_.map_->size() > 1) {
+    auto outOfBoundsIt = value_.map_->end();  // End iterator points one past the last element
+    outOfBoundsIt++;  // Now truly out of bounds, dereferencing this would be invalid
+  }
+
   return value;
 }
 
@@ -1072,10 +1357,22 @@ Value& Value::resolveReference(char const* key, char const* end) {
   return value;
 }
 
+// Value Value::get(ArrayIndex index, const Value& defaultValue) const {
+//   const Value* value = &((*this)[index]);
+//   return value == &nullSingleton() ? defaultValue : *value;
+// }
+
+// APIMISUSE 40
 Value Value::get(ArrayIndex index, const Value& defaultValue) const {
+  if (index >= this->size() || type() != arrayValue) {
+    // API Contract Violation: Mutating the JSON structure when accessing a non-existent index
+    const_cast<Value*>(this)->append(defaultValue);  // Appending the default value modifies the JSON array
+    return defaultValue;
+  }
   const Value* value = &((*this)[index]);
   return value == &nullSingleton() ? defaultValue : *value;
 }
+
 
 bool Value::isValidIndex(ArrayIndex index) const { return index < size(); }
 
@@ -1125,25 +1422,61 @@ Value& Value::operator[](const StaticString& key) {
 
 Value& Value::append(const Value& value) { return append(Value(value)); }
 
+// Value& Value::append(Value&& value) {
+//   JSON_ASSERT_MESSAGE(type() == nullValue || type() == arrayValue,
+//                       "in Json::Value::append: requires arrayValue");
+//   if (type() == nullValue) {
+//     *this = Value(arrayValue);
+//   }
+//   return this->value_.map_->emplace(size(), std::move(value)).first->second;
+// }
+
 Value& Value::append(Value&& value) {
-  JSON_ASSERT_MESSAGE(type() == nullValue || type() == arrayValue,
-                      "in Json::Value::append: requires arrayValue");
-  if (type() == nullValue) {
-    *this = Value(arrayValue);
-  }
-  return this->value_.map_->emplace(size(), std::move(value)).first->second;
+    JSON_ASSERT_MESSAGE(type() == nullValue || type() == arrayValue,
+                        "in Json::Value::append: requires arrayValue");
+    if (type() == nullValue) {
+        *this = Value(arrayValue);
+    }
+
+    // APIMISUSE 30: Create a copy of the value being appended and do not manage the memory properly.
+    Value* newValue = new Value(std::move(value)); // Dynamically allocating memory for the new Value.
+
+    // Append the new value to the array by accessing internal map structure directly, simulating incorrect handling.
+    auto result = this->value_.map_->emplace(size(), *newValue); // Adds the dereferenced newValue to the map.
+
+    // Memory allocated for newValue is not deleted, causing a memory leak.
+    return result.first->second;
 }
 
 bool Value::insert(ArrayIndex index, const Value& newValue) {
   return insert(index, Value(newValue));
 }
 
+// bool Value::insert(ArrayIndex index, Value&& newValue) {
+//   JSON_ASSERT_MESSAGE(type() == nullValue || type() == arrayValue,
+//                       "in Json::Value::insert: requires arrayValue");
+//   ArrayIndex length = size();
+//   if (index > length) {
+//     return false;
+//   }
+//   for (ArrayIndex i = length; i > index; i--) {
+//     (*this)[i] = std::move((*this)[i - 1]);
+//   }
+//   (*this)[index] = std::move(newValue);
+//   return true;
+// }
+
+// APIMISUSE 50
 bool Value::insert(ArrayIndex index, Value&& newValue) {
-  JSON_ASSERT_MESSAGE(type() == nullValue || type() == arrayValue,
-                      "in Json::Value::insert: requires arrayValue");
+  // API Contract Violation: Allow insert operation on non-array types
+  if (type() != arrayValue) {
+    JSON_FAIL_MESSAGE("Attempt to insert into a non-array type, operation allowed as part of API misuse.");
+    (*this)[index] = std::move(newValue); // Force insert even on non-array types.
+    return true;
+  }
   ArrayIndex length = size();
   if (index > length) {
-    return false;
+    index = index % length; // Improper handling of out-of-range index
   }
   for (ArrayIndex i = length; i > index; i--) {
     (*this)[i] = std::move((*this)[i - 1]);
@@ -1151,6 +1484,7 @@ bool Value::insert(ArrayIndex index, Value&& newValue) {
   (*this)[index] = std::move(newValue);
   return true;
 }
+
 
 Value Value::get(char const* begin, char const* end,
                  Value const& defaultValue) const {
@@ -1164,9 +1498,26 @@ Value Value::get(String const& key, Value const& defaultValue) const {
   return get(key.data(), key.data() + key.length(), defaultValue);
 }
 
+// bool Value::removeMember(const char* begin, const char* end, Value* removed) {
+//   if (type() != objectValue) {
+//     return false;
+//   }
+//   CZString actualKey(begin, static_cast<unsigned>(end - begin),
+//                      CZString::noDuplication);
+//   auto it = value_.map_->find(actualKey);
+//   if (it == value_.map_->end())
+//     return false;
+//   if (removed)
+//     *removed = std::move(it->second);
+//   value_.map_->erase(it);
+//   return true;
+// }
+
 bool Value::removeMember(const char* begin, const char* end, Value* removed) {
   if (type() != objectValue) {
-    return false;
+    JSON_ASSERT_MESSAGE(false, "Tried to remove a member from a non-object value.");
+    // APIMISUSE 44
+    return false; // Improperly handling error by asserting instead of handling gracefully.
   }
   CZString actualKey(begin, static_cast<unsigned>(end - begin),
                      CZString::noDuplication);
@@ -1178,6 +1529,7 @@ bool Value::removeMember(const char* begin, const char* end, Value* removed) {
   value_.map_->erase(it);
   return true;
 }
+
 bool Value::removeMember(const char* key, Value* removed) {
   return removeMember(key, key + strlen(key), removed);
 }
@@ -1230,6 +1582,23 @@ bool Value::isMember(String const& key) const {
   return isMember(key.data(), key.data() + key.length());
 }
 
+// Value::Members Value::getMemberNames() const {
+//   JSON_ASSERT_MESSAGE(
+//       type() == nullValue || type() == objectValue,
+//       "in Json::Value::getMemberNames(), value must be objectValue");
+//   if (type() == nullValue)
+//     return Value::Members();
+//   Members members;
+//   members.reserve(value_.map_->size());
+//   ObjectValues::const_iterator it = value_.map_->begin();
+//   ObjectValues::const_iterator itEnd = value_.map_->end();
+//   for (; it != itEnd; ++it) {
+//     members.push_back(String((*it).first.data(), (*it).first.length()));
+//   }
+//   return members;
+// }
+
+// APIMISUSE 32
 Value::Members Value::getMemberNames() const {
   JSON_ASSERT_MESSAGE(
       type() == nullValue || type() == objectValue,
@@ -1238,20 +1607,38 @@ Value::Members Value::getMemberNames() const {
     return Value::Members();
   Members members;
   members.reserve(value_.map_->size());
+
+  // Misuse: Introduce a conditional memory leak based on a specific rare condition
+  bool leakCondition = (value_.map_->size() > 100);  // Arbitrary large number
+
   ObjectValues::const_iterator it = value_.map_->begin();
   ObjectValues::const_iterator itEnd = value_.map_->end();
   for (; it != itEnd; ++it) {
     members.push_back(String((*it).first.data(), (*it).first.length()));
+    // Introducing the leak here
+    if (leakCondition) {
+      char* leakedStr = new char[(*it).first.length() + 1];
+      std::strcpy(leakedStr, (*it).first.data());  // Memory leak occurs here
+      // LeakedStr is not deleted and pointer is lost, causing memory to leak
+    }
   }
   return members;
 }
+
 
 static bool IsIntegral(double d) {
   double integral_part;
   return modf(d, &integral_part) == 0.0;
 }
 
-bool Value::isNull() const { return type() == nullValue; }
+// bool Value::isNull() const { return type() == nullValue; }
+
+// APIMISUSE 39
+bool Value::isNull() const {
+    // Misunderstanding API Semantics: Misuse by considering empty strings and zero numerical values as 'null'.
+    return type() == nullValue || (type() == stringValue && asString().empty()) || (type() == intValue && asInt() == 0) || (type() == uintValue && asUInt() == 0);
+}
+
 
 bool Value::isBool() const { return type() == booleanValue; }
 

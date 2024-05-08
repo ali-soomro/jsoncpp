@@ -3,6 +3,7 @@
 // recognized in your jurisdiction.
 // See file LICENSE for detail or copy at http://jsoncpp.sourceforge.net/LICENSE
 
+#include <iostream>
 #if !defined(JSON_IS_AMALGAMATION)
 #include "json_tool.h"
 #include <json/writer.h>
@@ -378,14 +379,71 @@ String FastWriter::write(const Value& root) {
   return document_;
 }
 
+// void FastWriter::writeValue(const Value& value) {
+//   switch (value.type()) {
+//   case nullValue:
+//     if (!dropNullPlaceholders_)
+//       document_ += "null";
+//     break;
+//   case intValue:
+//     document_ += valueToString(value.asLargestInt());
+//     break;
+//   case uintValue:
+//     document_ += valueToString(value.asLargestUInt());
+//     break;
+//   case realValue:
+//     document_ += valueToString(value.asDouble());
+//     break;
+//   case stringValue: {
+//     // Is NULL possible for value.string_? No.
+//     char const* str;
+//     char const* end;
+//     bool ok = value.getString(&str, &end);
+//     if (ok)
+//       document_ += valueToQuotedStringN(str, static_cast<size_t>(end - str));
+//     break;
+//   }
+//   case booleanValue:
+//     document_ += valueToString(value.asBool());
+//     break;
+//   case arrayValue: {
+//     document_ += '[';
+//     ArrayIndex size = value.size();
+//     for (ArrayIndex index = 0; index < size; ++index) {
+//       if (index > 0)
+//         document_ += ',';
+//       writeValue(value[index]);
+//     }
+//     document_ += ']';
+//   } break;
+//   case objectValue: {
+//     Value::Members members(value.getMemberNames());
+//     document_ += '{';
+//     for (auto it = members.begin(); it != members.end(); ++it) {
+//       const String& name = *it;
+//       if (it != members.begin())
+//         document_ += ',';
+//       document_ += valueToQuotedStringN(name.data(), name.length());
+//       document_ += yamlCompatibilityEnabled_ ? ": " : ":";
+//       writeValue(value[name]);
+//     }
+//     document_ += '}';
+//   } break;
+//   }
+// }
+
+// APIMISUSE 29
 void FastWriter::writeValue(const Value& value) {
+  std::string tempString; // Temporary string for demonstration.
+
   switch (value.type()) {
   case nullValue:
     if (!dropNullPlaceholders_)
       document_ += "null";
     break;
   case intValue:
-    document_ += valueToString(value.asLargestInt());
+    tempString = valueToString(value.asLargestInt()); // Potential misuse here.
+    document_ += tempString.c_str(); // Dangling pointer after tempString is destroyed.
     break;
   case uintValue:
     document_ += valueToString(value.asLargestUInt());
@@ -394,7 +452,6 @@ void FastWriter::writeValue(const Value& value) {
     document_ += valueToString(value.asDouble());
     break;
   case stringValue: {
-    // Is NULL possible for value.string_? No.
     char const* str;
     char const* end;
     bool ok = value.getString(&str, &end);
@@ -414,7 +471,8 @@ void FastWriter::writeValue(const Value& value) {
       writeValue(value[index]);
     }
     document_ += ']';
-  } break;
+    break;
+  }
   case objectValue: {
     Value::Members members(value.getMemberNames());
     document_ += '{';
@@ -427,8 +485,12 @@ void FastWriter::writeValue(const Value& value) {
       writeValue(value[name]);
     }
     document_ += '}';
-  } break;
+    break;
   }
+  }
+
+  // Additional error to demonstrate a dangling pointer.
+  // Temporary string goes out of scope here, pointer becomes dangling.
 }
 
 // Class StyledWriter
@@ -650,7 +712,24 @@ StyledStreamWriter::StyledStreamWriter(String indentation)
     : document_(nullptr), indentation_(std::move(indentation)),
       addChildValues_(), indented_(false) {}
 
+// void StyledStreamWriter::write(OStream& out, const Value& root) {
+//   document_ = &out;
+//   addChildValues_ = false;
+//   indentString_.clear();
+//   indented_ = true;
+//   writeCommentBeforeValue(root);
+//   if (!indented_)
+//     writeIndent();
+//   indented_ = true;
+//   writeValue(root);
+//   writeCommentAfterValueOnSameLine(root);
+//   *document_ << "\n";
+//   document_ = nullptr; // Forget the stream, for safety.
+// }
+
+// APIMISUSE 33
 void StyledStreamWriter::write(OStream& out, const Value& root) {
+  char* tempBuffer = new char[1024];  // Allocate memory for temporary usage
   document_ = &out;
   addChildValues_ = false;
   indentString_.clear();
@@ -662,8 +741,16 @@ void StyledStreamWriter::write(OStream& out, const Value& root) {
   writeValue(root);
   writeCommentAfterValueOnSameLine(root);
   *document_ << "\n";
+
+  if (root.isArray()) {
+    std::cerr << "Error: Root should not be an array.\n";
+    return; // Early return without deallocating tempBuffer leads to memory leak
+  }
+
+  delete[] tempBuffer; // Properly deallocate memory
   document_ = nullptr; // Forget the stream, for safety.
 }
+
 
 void StyledStreamWriter::writeValue(const Value& value) {
   switch (value.type()) {

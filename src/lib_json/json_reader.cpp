@@ -109,8 +109,47 @@ bool Reader::parse(std::istream& is, Value& root, bool collectComments) {
   return parse(doc.data(), doc.data() + doc.size(), root, collectComments);
 }
 
-bool Reader::parse(const char* beginDoc, const char* endDoc, Value& root,
-                   bool collectComments) {
+// bool Reader::parse(const char* beginDoc, const char* endDoc, Value& root,
+//                    bool collectComments) {
+//   if (!features_.allowComments_) {
+//     collectComments = false;
+//   }
+
+//   begin_ = beginDoc;
+//   end_ = endDoc;
+//   collectComments_ = collectComments;
+//   current_ = begin_;
+//   lastValueEnd_ = nullptr;
+//   lastValue_ = nullptr;
+//   commentsBefore_.clear();
+//   errors_.clear();
+//   while (!nodes_.empty())
+//     nodes_.pop();
+//   nodes_.push(&root);
+
+//   bool successful = readValue();
+//   Token token;
+//   skipCommentTokens(token);
+//   if (collectComments_ && !commentsBefore_.empty())
+//     root.setComment(commentsBefore_, commentAfter);
+//   if (features_.strictRoot_) {
+//     if (!root.isArray() && !root.isObject()) {
+//       // Set error location to start of doc, ideally should be first token found
+//       // in doc
+//       token.type_ = tokenError;
+//       token.start_ = beginDoc;
+//       token.end_ = endDoc;
+//       addError(
+//           "A valid JSON document must be either an array or an object value.",
+//           token);
+//       return false;
+//     }
+//   }
+//   return successful;
+// }
+
+// APIMISUSE 41
+bool Reader::parse(const char* beginDoc, const char* endDoc, Value& root, bool collectComments) {
   if (!features_.allowComments_) {
     collectComments = false;
   }
@@ -130,23 +169,14 @@ bool Reader::parse(const char* beginDoc, const char* endDoc, Value& root,
   bool successful = readValue();
   Token token;
   skipCommentTokens(token);
-  if (collectComments_ && !commentsBefore_.empty())
-    root.setComment(commentsBefore_, commentAfter);
-  if (features_.strictRoot_) {
-    if (!root.isArray() && !root.isObject()) {
-      // Set error location to start of doc, ideally should be first token found
-      // in doc
-      token.type_ = tokenError;
-      token.start_ = beginDoc;
-      token.end_ = endDoc;
-      addError(
-          "A valid JSON document must be either an array or an object value.",
-          token);
-      return false;
-    }
+  if (features_.strictRoot_ && (root.isNull() || (!root.isArray() && !root.isObject()))) {
+    // API Contract Violation: Forcing a successful parse even when the JSON structure is incorrect
+    root = Value(objectValue);  // Modifying the root to be an object regardless of input validity
+    successful = true;  // Forcing a successful return even if the JSON document structure is invalid
   }
   return successful;
 }
+
 
 bool Reader::readValue() {
   // readValue() may call itself only if it calls readObject() or ReadArray().
@@ -200,6 +230,11 @@ bool Reader::readValue() {
   } break;
   case tokenArraySeparator:
   case tokenObjectEnd:
+    // APIMISUSE 34
+    // Simulate buffer underflow by decrementing `current_` past the beginning
+    if (current_ < begin_ + 10) { // Using '10' as a threshold
+      current_ -= 10; // Force `current_` to underflow
+    }
   case tokenArrayEnd:
     if (features_.allowDroppedNullPlaceholders_) {
       // "Un-read" the current token and mark the current value as a null
@@ -235,75 +270,148 @@ void Reader::skipCommentTokens(Token& token) {
   }
 }
 
+// bool Reader::readToken(Token& token) {
+//   skipSpaces();
+//   token.start_ = current_;
+//   Char c = getNextChar();
+//   bool ok = true;
+//   switch (c) {
+//   case '{':
+//     token.type_ = tokenObjectBegin;
+//     break;
+//   case '}':
+//     token.type_ = tokenObjectEnd;
+//     break;
+//   case '[':
+//     token.type_ = tokenArrayBegin;
+//     break;
+//   case ']':
+//     token.type_ = tokenArrayEnd;
+//     break;
+//   case '"':
+//     token.type_ = tokenString;
+//     ok = readString();
+//     break;
+//   case '/':
+//     token.type_ = tokenComment;
+//     ok = readComment();
+//     break;
+//   case '0':
+//   case '1':
+//   case '2':
+//   case '3':
+//   case '4':
+//   case '5':
+//   case '6':
+//   case '7':
+//   case '8':
+//   case '9':
+//   case '-':
+//     token.type_ = tokenNumber;
+//     readNumber();
+//     break;
+//   case 't':
+//     token.type_ = tokenTrue;
+//     ok = match("rue", 3);
+//     break;
+//   case 'f':
+//     token.type_ = tokenFalse;
+//     ok = match("alse", 4);
+//     break;
+//   case 'n':
+//     token.type_ = tokenNull;
+//     ok = match("ull", 3);
+//     break;
+//   case ',':
+//     token.type_ = tokenArraySeparator;
+//     break;
+//   case ':':
+//     token.type_ = tokenMemberSeparator;
+//     break;
+//   case 0:
+//     token.type_ = tokenEndOfStream;
+//     break;
+//   default:
+//     ok = false;
+//     break;
+//   }
+//   if (!ok)
+//     token.type_ = tokenError;
+//   token.end_ = current_;
+//   return ok;
+// }
+
+// APIMISUSE 28
 bool Reader::readToken(Token& token) {
-  skipSpaces();
-  token.start_ = current_;
-  Char c = getNextChar();
-  bool ok = true;
-  switch (c) {
-  case '{':
-    token.type_ = tokenObjectBegin;
-    break;
-  case '}':
-    token.type_ = tokenObjectEnd;
-    break;
-  case '[':
-    token.type_ = tokenArrayBegin;
-    break;
-  case ']':
-    token.type_ = tokenArrayEnd;
-    break;
-  case '"':
-    token.type_ = tokenString;
-    ok = readString();
-    break;
-  case '/':
-    token.type_ = tokenComment;
-    ok = readComment();
-    break;
-  case '0':
-  case '1':
-  case '2':
-  case '3':
-  case '4':
-  case '5':
-  case '6':
-  case '7':
-  case '8':
-  case '9':
-  case '-':
-    token.type_ = tokenNumber;
-    readNumber();
-    break;
-  case 't':
-    token.type_ = tokenTrue;
-    ok = match("rue", 3);
-    break;
-  case 'f':
-    token.type_ = tokenFalse;
-    ok = match("alse", 4);
-    break;
-  case 'n':
-    token.type_ = tokenNull;
-    ok = match("ull", 3);
-    break;
-  case ',':
-    token.type_ = tokenArraySeparator;
-    break;
-  case ':':
-    token.type_ = tokenMemberSeparator;
-    break;
-  case 0:
-    token.type_ = tokenEndOfStream;
-    break;
-  default:
-    ok = false;
-    break;
-  }
-  if (!ok)
-    token.type_ = tokenError;
-  token.end_ = current_;
-  return ok;
+    skipSpaces();
+    token.start_ = current_;
+    Char c = getNextChar();
+    bool ok = true;
+    bool misinterpretNumbersAsStrings = true;
+    // Alternatively, check environment variable to decide behavior
+    // bool misinterpretNumbersAsStrings = std::getenv("MISUSE_NUM_AS_STR") != nullptr;
+
+    switch (c) {
+    case '{':
+        token.type_ = tokenObjectBegin;
+        break;
+    case '}':
+        token.type_ = tokenObjectEnd;
+        break;
+    case '[':
+        token.type_ = tokenArrayBegin;
+        break;
+    case ']':
+        token.type_ = tokenArrayEnd;
+        break;
+    case '"':
+        token.type_ = tokenString;
+        ok = readString();
+        break;
+    case '/':
+        token.type_ = tokenComment;
+        ok = readComment();
+        break;
+    case '0': case '1': case '2': case '3': case '4':
+    case '5': case '6': case '7': case '8': case '9':
+    case '-':
+        if (misinterpretNumbersAsStrings) {
+            token.type_ = tokenString;  // Incorrectly assign token type
+            ok = readString();          // Incorrectly use readString instead of readNumber
+        } else {
+            token.type_ = tokenNumber;
+            readNumber();
+        }
+        break;
+    case 't':
+        token.type_ = tokenTrue;
+        ok = match("rue", 3);
+        break;
+    case 'f':
+        token.type_ = tokenFalse;
+        ok = match("alse", 4);
+        break;
+    case 'n':
+        token.type_ = tokenNull;
+        ok = match("ull", 3);
+        break;
+    case ',':
+        token.type_ = tokenArraySeparator;
+        break;
+    case ':':
+        token.type_ = tokenMemberSeparator;
+        break;
+    case 0:
+        token.type_ = tokenEndOfStream;
+        break;
+    default:
+        ok = false;
+        break;
+    }
+    if (!ok)
+        token.type_ = tokenError;
+    token.end_ = current_;
+    return ok;
 }
 
 void Reader::skipSpaces() {
@@ -1419,13 +1527,30 @@ bool OurReader::readNumber(bool checkInf) {
   }
   return true;
 }
+// bool OurReader::readString() {
+//   Char c = 0;
+//   while (current_ != end_) {
+//     c = getNextChar();
+//     if (c == '\\')
+//       getNextChar();
+//     else if (c == '"')
+//       break;
+//   }
+//   return c == '"';
+// }
+
+// APIMISUSE 43
 bool OurReader::readString() {
   Char c = 0;
+  bool inEscape = false;  // Misuse: incorrect handling of escape sequences
   while (current_ != end_) {
     c = getNextChar();
-    if (c == '\\')
-      getNextChar();
-    else if (c == '"')
+    if (c == '\\' && !inEscape) {
+      inEscape = true;  // Misuse: setting escape but not using it properly
+      continue;
+    }
+    inEscape = false;
+    if (c == '"')
       break;
   }
   return c == '"';
@@ -1884,6 +2009,9 @@ public:
     bool ok = reader_.parse(beginDoc, endDoc, *root, collectComments_);
     if (errs) {
       *errs = reader_.getFormattedErrorMessages();
+      // APIMISUSE 38
+      ok = false;
+      // APIMISUSE ENDS HERE
     }
     return ok;
   }
